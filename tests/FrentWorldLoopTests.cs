@@ -5,6 +5,7 @@ namespace Ecs.Loop.Frent.Tests;
 
 public record struct Question(int Number);
 public record struct Answer(int Number);
+public record struct Alert(string Text);
 
 public class FrentWorldLoopTests
 {
@@ -24,6 +25,19 @@ public class FrentWorldLoopTests
         {
             var entity = row.Entity;
             entity.Delete();
+        }
+    }
+
+    // Doubles the question like DoubleSystem and also "emits" an event:
+    // a system emits by adding the notification struct as a component
+    private static void AlertSystem(World world)
+    {
+        foreach (var row in world.Query<Question>().EnumerateWithEntities<Question>())
+        {
+            var entity = row.Entity;
+            entity.Add(new Answer(row.Item1.Value.Number * 2));
+            entity.Add(new Alert($"#{row.Item1.Value.Number}"));
+            entity.Remove<Question>();
         }
     }
 
@@ -85,5 +99,72 @@ public class FrentWorldLoopTests
         loop.Tick();
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => answer);
+    }
+
+    [Fact]
+    public async Task Notification_AddedBySystem_ReachesSubscriber()
+    {
+        using var world = new World();
+        var loop = new FrentWorldLoop(world, AlertSystem);
+        loop.AddNotificationDelivery<Alert>();
+
+        var alerts = new List<Alert>();
+        using var _ = loop.Subscribe<Alert>(a => { alerts.Add(a); return Task.CompletedTask; });
+
+        var answer = loop.AskAsync<Question, Answer>(new Question(7));
+        loop.Tick();
+        await answer;
+        await Task.Delay(100); // handlers run on the thread pool
+
+        Assert.Equal([new Alert("#7")], alerts);
+        Assert.Equal(0, world.EntityCount); // the notification component was consumed
+    }
+
+    [Fact]
+    public async Task Notification_SubscriberUnsubscribed_StopsReceiving()
+    {
+        using var world = new World();
+        var loop = new FrentWorldLoop(world, AlertSystem);
+        loop.AddNotificationDelivery<Alert>();
+
+        var alerts = new List<Alert>();
+        var subscription = loop.Subscribe<Alert>(a => { alerts.Add(a); return Task.CompletedTask; });
+        subscription.Dispose();
+
+        var answer = loop.AskAsync<Question, Answer>(new Question(1));
+        loop.Tick();
+        await answer;
+        await Task.Delay(100);
+
+        Assert.Empty(alerts);
+        Assert.Equal(0, world.EntityCount); // delivered to nobody, still cleaned up
+    }
+
+    [Fact]
+    public async Task Notification_ThrowingHandler_DoesNotBreakLaterTicks()
+    {
+        using var world = new World();
+        var loop = new FrentWorldLoop(world, AlertSystem);
+        loop.AddNotificationDelivery<Alert>();
+
+        var alerts = new List<Alert>();
+        using var _ = loop.Subscribe<Alert>(a =>
+        {
+            alerts.Add(a);
+            throw new InvalidOperationException("bad adapter");
+        });
+
+        var first = loop.AskAsync<Question, Answer>(new Question(1));
+        loop.Tick();
+        await first;
+        await Task.Delay(100);
+        Assert.Equal([new Alert("#1")], alerts);
+
+        // The next tick still runs, and the handler is called again
+        var second = loop.AskAsync<Question, Answer>(new Question(2));
+        loop.Tick();
+        await second;
+        await Task.Delay(100);
+        Assert.Equal([new Alert("#1"), new Alert("#2")], alerts);
     }
 }
