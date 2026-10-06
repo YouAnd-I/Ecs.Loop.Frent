@@ -4,27 +4,12 @@ using Frent;
 
 namespace Ecs.Loop.Frent;
 
-// The game loop: owns the World and is the only code that touches it.
-//
-// Frent's World is not thread safe (4 threads sharing one crash the process), so
-// AskAsync only enqueues; everything else happens inside Tick, on one thread.
-//
-// Contract for systems: answer a request by adding the response component to the
-// request's own entity and removing the request. The loop then hands the response
-// to the waiting adapter and despawns the entity.
-//
-// Systems can also emit events for the outside world: they add a notification
-// struct (plain data from a <Feature>.Data module) as a component on an entity.
-// The composition root calls AddNotificationDelivery<T>() once, which appends a
-// delivery pass to the end of the tick; it hands each notification to the
-// subscribers registered through IWorldClient.Subscribe<T>().
 public sealed class FrentWorldLoop(World world, params Action<World>[] systems) : IWorldClient
 {
     private readonly Channel<Action> _inbox = Channel.CreateUnbounded<Action>(new() { SingleReader = true });
     private readonly List<Func<bool>> _pendingReplies = [];
     private readonly List<Action<World>> _systems = [.. systems];
 
-    // Adapters subscribe at host startup, from any thread.
     private readonly object _subscriptionLock = new();
     private readonly Dictionary<Type, List<Delegate>> _subscribers = [];
 
@@ -32,7 +17,6 @@ public sealed class FrentWorldLoop(World world, params Action<World>[] systems) 
         TRequest request,
         CancellationToken cancellationToken = default)
     {
-        // Async continuations: the adapter's code after 'await' must never run on the loop thread
         var reply = new TaskCompletionSource<TResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
         var registration = cancellationToken.Register(() => reply.TrySetCanceled(cancellationToken));
 
@@ -41,7 +25,6 @@ public sealed class FrentWorldLoop(World world, params Action<World>[] systems) 
             var entity = world.Create(request);
             _pendingReplies.Add(() =>
             {
-                // A system despawned the request without answering it
                 if (!entity.IsAlive) reply.TrySetCanceled();
                 else if (entity.Has<TResponse>()) reply.TrySetResult(entity.Get<TResponse>());
 
@@ -66,8 +49,6 @@ public sealed class FrentWorldLoop(World world, params Action<World>[] systems) 
         return new Subscription(this, typeof(TNotification), handler);
     }
 
-    // Not on IWorldClient: only the composition root and the delivery pass emit notifications.
-    // Dispatches on the thread pool; a throwing handler is logged and can never kill a tick.
     public void Publish<TNotification>(TNotification notification)
     {
         Delegate[] handlers;
@@ -90,9 +71,6 @@ public sealed class FrentWorldLoop(World world, params Action<World>[] systems) 
         }
     }
 
-    // Call once after construction, before the loop runs. Appends a delivery pass to the
-    // end of the tick: every TNotification component added by a system is removed from its
-    // entity and published to the subscribers. This is how a system "emits" an event.
     public void AddNotificationDelivery<TNotification>() =>
         _systems.Add(deliveryWorld =>
         {
@@ -107,8 +85,6 @@ public sealed class FrentWorldLoop(World world, params Action<World>[] systems) 
             }
         });
 
-    // One frame: 1. apply inputs  2. run systems in order  3. deliver replies.
-    // Call from one thread only: RunAsync in a host, or directly in tests.
     public void Tick()
     {
         while (_inbox.Reader.TryRead(out var input)) input();

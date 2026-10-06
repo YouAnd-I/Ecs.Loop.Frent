@@ -28,8 +28,6 @@ public class FrentWorldLoopTests
         }
     }
 
-    // Doubles the question like DoubleSystem and also "emits" an event:
-    // a system emits by adding the notification struct as a component
     private static void AlertSystem(World world)
     {
         foreach (var row in world.Query<Question>().EnumerateWithEntities<Question>())
@@ -114,10 +112,10 @@ public class FrentWorldLoopTests
         var answer = loop.AskAsync<Question, Answer>(new Question(7));
         loop.Tick();
         await answer;
-        await Task.Delay(100); // handlers run on the thread pool
+        await Task.Delay(100);
 
         Assert.Equal([new Alert("#7")], alerts);
-        Assert.Equal(0, world.EntityCount); // the notification component was consumed
+        Assert.Equal(0, world.EntityCount);
     }
 
     [Fact]
@@ -137,7 +135,7 @@ public class FrentWorldLoopTests
         await Task.Delay(100);
 
         Assert.Empty(alerts);
-        Assert.Equal(0, world.EntityCount); // delivered to nobody, still cleaned up
+        Assert.Equal(0, world.EntityCount);
     }
 
     [Fact]
@@ -160,7 +158,6 @@ public class FrentWorldLoopTests
         await Task.Delay(100);
         Assert.Equal([new Alert("#1")], alerts);
 
-        // The next tick still runs, and the handler is called again
         var second = loop.AskAsync<Question, Answer>(new Question(2));
         loop.Tick();
         await second;
